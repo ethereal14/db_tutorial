@@ -8,6 +8,10 @@
 #include <sys/types.h>
 #include <unistd.h>
 
+#define bool uint8_t
+#define TRUE (1)
+#define FALSE (0)
+
 #define COLUMN_USERNAME_SIZE 32
 #define COLUMN_EMAIL_SIZE 255
 #define size_of_attribute(Struct, Attribute) sizeof(((Struct *)0)->Attribute)
@@ -60,6 +64,12 @@ typedef struct {
     Pager   *pager;
 } Table;
 
+typedef struct {
+    Table   *table;
+    uint32_t row_num;
+    bool     end_of_table; // Indicates a position one past the last element
+} Cursor;
+
 const uint32_t ID_SIZE = size_of_attribute(Row, id);
 const uint32_t USERNAME_SIZE = size_of_attribute(Row, username);
 const uint32_t EMAIL_SIZE = size_of_attribute(Row, email);
@@ -73,6 +83,33 @@ const uint32_t ROWS_PER_PAGE = PAGE_SIZE / ROW_SIZE;
 const uint32_t TABLE_MAX_ROWS = ROWS_PER_PAGE * TABLE_MAX_PAGES;
 
 void db_close(Table *table);
+
+Cursor *table_start(Table *table) {
+    Cursor *cursor = malloc(sizeof(Cursor));
+
+    cursor->table = table;
+    cursor->row_num = 0;
+    cursor->end_of_table = (table->num_rows == 0);
+
+    return cursor;
+}
+
+Cursor *table_end(Table *table) {
+    Cursor *cursor = malloc(sizeof(Cursor));
+
+    cursor->table = table;
+    cursor->row_num = 0;
+    cursor->end_of_table = TRUE;
+
+    return cursor;
+}
+
+void cursor_advance(Cursor *cursor) {
+    cursor->row_num += 1;
+    if (cursor->row_num >= cursor->table->num_rows) {
+        cursor->end_of_table = TRUE;
+    }
+}
 
 void print_row(Row *row) {
     printf("(%d,%s,%s)\n", row->id, row->username, row->email);
@@ -121,10 +158,11 @@ void *get_page(Pager *pager, uint32_t page_num) {
     return pager->page[ page_num ];
 }
 
-void *row_slot(Table *table, uint32_t row_num) {
+void *cursor_value(Cursor *cursor) {
+    uint32_t row_num = cursor->row_num;
     uint32_t page_num = row_num / ROWS_PER_PAGE;
 
-    void *page = get_page(table->pager, page_num);
+    void *page = get_page(cursor->table->pager, page_num);
 
     uint32_t row_offset = row_num % ROWS_PER_PAGE;
     uint32_t byte_offset = row_offset * ROW_SIZE;
@@ -218,20 +256,25 @@ ExecuteResult execute_insert(Statement *statement, Table *table) {
         return EXECUTE_TABLE_FULL;
     }
 
-    Row *row_to_insert = &(statement->row_to_insert);
+    Row    *row_to_insert = &(statement->row_to_insert);
+    Cursor *curosr = table_end(table);
 
-    serialize_row(row_to_insert, row_slot(table, table->num_rows));
+    serialize_row(row_to_insert, cursor_value(curosr));
     table->num_rows += 1;
+
+    free(curosr);
 
     return EXECUTE_SUCCESS;
 }
 
 ExecuteResult execute_select(Statement *statement, Table *table) {
-    Row row;
+    Row     row;
+    Cursor *curosr = table_start(table);
 
-    for (uint32_t i = 0; i < table->num_rows; i++) {
-        deserialize_row(row_slot(table, i), &row);
+    while (!(curosr->end_of_table)) {
+        deserialize_row(cursor_value(curosr), &row);
         print_row(&row);
+        cursor_advance(curosr);
     }
 
     return EXECUTE_SUCCESS;
